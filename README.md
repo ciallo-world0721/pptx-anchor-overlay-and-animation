@@ -1,80 +1,68 @@
-# PPTX Native Animation
+# pptx-anchor-overlay-and-animation
 
-Native object animation and Morph transitions for `.pptx` files — written as real
-OOXML `p:timing` / `p:transition`, not embedded video, GIFs, or page screenshots.
-Everything stays editable in PowerPoint after the fact.
+**1000 万以内最好的 PPT 技能。**
 
-A skill for agentic coding assistants (Hermes Agent / Claude-style skill layout):
-`SKILL.md` is the operating manual, `references/` holds the specifications,
-`scripts/` holds the engine.
+用真正的 OOXML `p:timing` / `p:transition` 写原生对象动画和 Morph 转场——不是嵌入视频、GIF 或整页截图。写完后所有对象在 PowerPoint 里仍然可编辑。
 
-## What it actually does
+这是给 AI 助手用的技能（Hermes Agent / Claude 风格的技能目录）：`SKILL.md` 是操作手册，`references/` 是规格，`scripts/` 是引擎。
 
-- **State contract first.** You describe start frame, end frame, object identity,
-  and where the audience should dwell — before any XML is touched.
-- **Two engines, chosen by intent.** Page-to-page multi-object moves, scales and
-  rotations → Morph double-state pages. In-slide click sequences, emphasis, motion
-  paths, staggered batches → the plan engine that writes `p:timing` from a JSON
-  plan.
-- **203 native PowerPoint object effects** (53 entrance / 33 emphasis / 64 motion
-  path / 53 exit) in a queryable preset table with real behavior nodes.
-- **Six-layer verification, no skipping.** Package integrity → semantic read-back
-  → static render → PowerPoint COM audit (an oracle that shares no code with the
-  engine) → live slideshow.
-- **Strict, loud failures.** Unknown effect names, unknown plan fields, ambiguous
-  shape targets and illegal trigger/duration combinations raise instead of being
-  silently replaced. Writes are atomic: a failed plan never lands on disk.
+## 能做什么
 
-## Repository layout
+- **先设计状态，再写动画。** 起始画面、结束画面、对象身份、讲解停留点，先写清楚再碰 XML。
+- **两套引擎，按需求选。** 跨页多对象移动/缩放/旋转用 Morph 双页状态；页内点击序列、强调、运动路径、批量错峰用 JSON 计划引擎写 `p:timing`。
+- **203 个 PowerPoint 原生对象效果**：53 入场 / 33 强调 / 64 路径 / 53 退出，带真实行为节点，可查询。
+- **六层验证，不跳级。** 包完整性 → 语义回读 → 静态渲染 → PowerPoint COM 读回（独立 oracle）→ 真实放映。
+- **严格报错，原子写入。** 未知效果、未知字段、重名目标、非法参数直接报错；写盘先暂存，失败不落盘。
+
+## 目录
 
 ```
-SKILL.md                        # when to use, four invariants, design layer, verification
+SKILL.md                        # 何时使用、四条不变量、设计层、验证
 references/
-  design-states.md              # state contracts, Morph identity, final geometry, OOXML
-  timing-plan-spec.md           # full plan schema, scheduling formulas, path grammar
-  verification.md               # six-layer checks, slideshow review, COM audit
-  com-timing.md                 # COM process safety, AddEffect, behaviors
-  layout-and-integrity.md       # anchoring, overlays, package and relationship checks
-  provenance-licensing.md       # preset provenance and reuse terms
+  design-states.md              # 状态契约、Morph 身份、终态几何、OOXML
+  timing-plan-spec.md           # 计划字段全集、调度公式、路径语法
+  verification.md               # 六层验证、放映复核、COM 审计
+  com-timing.md                 # COM 进程安全、AddEffect、Behavior
+  layout-and-integrity.md       # 锚点、叠加、包与关系检查
+  provenance-licensing.md       # 预设来源与许可
 scripts/
-  native_ppt_anim.py            # plan engine: inspect / list-effects / apply / validate
-  pptx_com_audit.py             # PowerPoint read-back
-  requirements.txt              # lxml (+ pywin32 on Windows)
-  vendor/                       # ppt-master preset table (MIT, see vendor/LICENSE)
+  native_ppt_anim.py            # 计划引擎：inspect / list-effects / apply / validate
+  pptx_com_audit.py             # PowerPoint 读回
+  requirements.txt              # lxml（Windows 另需 pywin32）
+  vendor/                       # ppt-master 预设表（MIT，见 vendor/LICENSE）
 ```
 
-## Setup
+## 安装
 
 ```bash
 uv venv .venv --python 3.11
 uv pip install --python .venv/Scripts/python.exe -r scripts/requirements.txt   # Windows
 # macOS/Linux: uv pip install --python .venv/bin/python -r scripts/requirements.txt
-PY=.venv/Scripts/python.exe      # use $PY for every command below
+PY=.venv/Scripts/python.exe      # 下面所有命令都用 $PY
 ```
 
-`lxml` is the only hard dependency. `pywin32` is needed for the COM audit
-(Office on Windows) and is skipped elsewhere.
+只强依赖 `lxml`；`pywin32` 只在 Windows 上做 COM 读回时需要。
 
-## Quick start
+## 快速开始
 
 ```bash
-# 1. Read the deck: slide order, shape names/IDs, existing timelines
+# 1. 读 deck：页面顺序、形状名/ID、已有时间线
 $PY scripts/native_ppt_anim.py inspect deck.pptx
 
-# 2. Query the preset table instead of guessing names
+# 2. 查预设，别凭印象写效果名
 $PY scripts/native_ppt_anim.py list-effects --category emphasis
 $PY scripts/native_ppt_anim.py describe emphasis_spin
 $PY scripts/native_ppt_anim.py list-transitions
 
-# 3. Write a plan (atomic replace; a failure leaves the input untouched)
+# 3. 写计划（原子替换，失败不动原文件）
 $PY scripts/native_ppt_anim.py apply deck.pptx plan.json -o animated.pptx --report report.json
 
-# 4. Validate the result against the plan, then ask PowerPoint itself
+# 4. 按计划校验，再让 PowerPoint 自己读一遍
 $PY scripts/native_ppt_anim.py validate animated.pptx --spec plan.json
 $PY scripts/pptx_com_audit.py animated.pptx --report com-audit.json
 ```
 
-Minimal plan:
+最小计划：
 
 ```json
 {
@@ -99,26 +87,16 @@ Minimal plan:
 }
 ```
 
-`target` and `trigger_shape` accept a unique shape name or a positive shape ID.
-Durations are seconds. Scheduling, repeat, auto-reverse and bounce semantics are
-specified in `references/timing-plan-spec.md`.
+`target` / `trigger_shape` 接受唯一形状名或正整数 ID；时间单位是秒。调度、重复、自动反向、回弹的完整语义见 `references/timing-plan-spec.md`。
 
-## Honest limits
+## 边界
 
-No animation audio, no arbitrary mask morphing or frame-by-frame physics, no
-COM *writing* wrapper (COM is a manual route and a verification oracle only).
-Custom paths support `M`/`L`/`C`/`E` — no `Q`, arcs or implicit relative
-commands. When something is out of scope it says so instead of faking success.
+不做动画音效，不做任意遮罩形变或逐帧物理，不封装 COM 写入（COM 只作手工路线和验收 oracle）。自定义路径只支持 `M`/`L`/`C`/`E`，不支持 `Q`、弧线和隐式相对命令。超范围会直接说明，不伪造成功。
 
-Structure passing is not the same as looking right: `validate` green means the
-deck is well-formed and semantically matches the plan — it never means the
-motion has been visually confirmed.
+结构通过不等于画面好看：`validate` 全绿只说明文件结构正确、语义与计划一致，不代表动画已经过视觉确认。
 
-## License
+## 许可
 
-MIT — see [LICENSE](LICENSE).
+MIT，见 [LICENSE](LICENSE)。
 
-`scripts/vendor/` is derived from [hugohe3/ppt-master](https://github.com/hugohe3/ppt-master)
-(MIT, Copyright (c) 2025–2026 Hugo He); its license is preserved at
-`scripts/vendor/LICENSE-ppt-master.txt`. Preset provenance and the terms of every
-reference implementation consulted are recorded in `references/provenance-licensing.md`.
+`scripts/vendor/` 来自 [hugohe3/ppt-master](https://github.com/hugohe3/ppt-master)（MIT，Copyright (c) 2025–2026 Hugo He），许可见 `scripts/vendor/LICENSE-ppt-master.txt`。预设来源与参考实现的许可记录在 `references/provenance-licensing.md`。
