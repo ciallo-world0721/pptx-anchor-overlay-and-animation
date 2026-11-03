@@ -158,7 +158,7 @@ repeat 存在：playback = 无限，不更新 timeline_end
 $PY scripts/native_ppt_anim.py timeline deck.pptx --slide 4
 ```
 
-按点击组输出每条动画的目标、效果、`start_s`、`end_s`、`duration_s`、重复状态。时间来自真实 `p:timing` 读回，不另算一套调度；无限重复行输出 `end_s: null`。交互序列按触发形状单独分组。
+按点击组输出每条动画的目标、效果、`start_s`、`end_s`、`duration_s`、重复状态，以及 `motion_path` / `custom`。时间来自真实 `p:timing` 读回，不另算一套调度；无限重复行输出 `end_s: null`。交互序列按触发形状单独分组。自定义路径的 `effect` 仍显示为原生载体 `path_right`，用 `custom: true` 与 `motion_path` 区分。
 
 ## Transition 字段
 

@@ -1021,6 +1021,35 @@ class NativeTransitionAndSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("out of range", result.stderr)
 
+    def test_validate_spec_catches_mutated_duration(self) -> None:
+        spec = {
+            "version": 1,
+            "slides": [{
+                "slide": 1,
+                "animations": [{
+                    "target": "hero",
+                    "effect": "entrance_fade",
+                    "duration": 0.5,
+                }],
+            }],
+        }
+        output, _, _ = self.apply_plan(FIXTURE, spec, "mutate-duration")
+        parts = read_parts(output)
+        root = etree.fromstring(parts["ppt/slides/slide1.xml"])
+        changed = 0
+        for ctn in root.iter(qn("cTn")):
+            if ctn.get("dur") == "500":
+                ctn.set("dur", "900")
+                changed += 1
+        self.assertGreater(changed, 0)
+        parts["ppt/slides/slide1.xml"] = etree.tostring(
+            root, xml_declaration=True, encoding="UTF-8", standalone=True
+        )
+        write_parts(output, parts)
+        result = run_engine("validate", output, "--spec", self.plan("mutated", spec))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duration", result.stderr.lower())
+
     def test_validate_without_spec_rejects_unreadable_rows(self) -> None:
         output, _, _ = self.apply_plan(
             FIXTURE,
