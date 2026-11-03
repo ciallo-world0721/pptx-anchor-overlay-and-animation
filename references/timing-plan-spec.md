@@ -5,7 +5,8 @@
 ```text
 {
   version: 1,                 // 必填，当前仅支持 1
-  kiosk: false,               // 可选，设置 kiosk 循环放映
+  kiosk: false,               // 可选；true 设为 kiosk 循环放映，false 表示不改动
+  canvas_px: [1920, 1080],    // 可选，path_px 的设计画布；宽高比必须与页面一致
   slides: [SlideSpec, ...]    // 必填，非空，页码不得重复
 }
 
@@ -30,7 +31,7 @@ SlideSpec {
 先用 CLI 检查：
 
 ```bash
-python3 scripts/native_ppt_anim.py inspect input.pptx
+$PY scripts/native_ppt_anim.py inspect input.pptx
 ```
 
 ## Animation 字段
@@ -38,15 +39,18 @@ python3 scripts/native_ppt_anim.py inspect input.pptx
 ```text
 {
   target: "shape-name" | 2,
+  targets: ["step-*"],        // 可选；与 target 互斥。名称/正整数 ID/fnmatch 通配符
+  stagger: 0.14,              // 仅配 targets；第 i 条 delay = 原 delay + i×stagger
   effect: "entrance_fade" | ... | "custom_motion",
   duration: 0.5,               // 正秒数；省略时使用预设作者时长
   delay: 0,                   // 非负秒数，高级层换算为 delay_ms
   trigger: "after-previous", // on-click | with-previous | after-previous
-  trigger_shape: "button",   // 需要 trigger=on-click
+  trigger_shape: "button",   // 需要 trigger=on-click；不能与 targets 同用
   effect_options: {},         // 由 describe 查询，逐效果校验
 
   repeat_count: 2,            // 正数，可与小数次数；与 repeat_duration 互斥
   repeat_duration: 3.0,       // 正秒数，总重复时长
+  repeat: "until-next-click", // until-next-click | until-end-of-slide；与上面两者互斥
   auto_reverse: false,
   rewind: false,              // true 对应播放后移除终点状态
   accelerate: 0,              // 0–1
@@ -56,13 +60,31 @@ python3 scripts/native_ppt_anim.py inspect input.pptx
   after_effect: "none",      // none | dim | hide | hide-on-next-click
 
   path: "M 0 0 L 0.2 0 E",  // 仅 custom_motion，归一化坐标
-  path_px: "M 0 0 L 200 0 E"// 仅 custom_motion，96 DPI 像素坐标
+  path_px: "M 0 0 L 200 0 E",// 仅 custom_motion，按 canvas_px 或 96 DPI 换算
+  from_offset_px: [0, 24],   // 入场糖：同帧从偏移处移动到终点
+  offset_decelerate: 0.85,   // 仅配 from_offset_px，默认 0.85
+  iterate: {"by": "letter", "delay": 0.04}, // 逐字/逐词；只限文本入场/强调
+  build: "paragraph"         // 逐段；只限文本入场/强调；与 iterate 互斥
 }
 ```
 
 `duration` 对不可缩放的原生预设不会改写内部行为时长。`emphasis_change_font` 必须提供 `effect_options.font_name`；其他必选参数也通过 `describe` 查明。
 
 当前高级接口不接受 `sound`，避免写入缺少关系或媒体部分的半完成动画。
+
+## 语法糖与展开
+
+语法糖在 `normalize_spec` 之前展开成普通条目，`apply` 与 `validate --spec` 走同一条路径。
+
+展开顺序：先 `targets`，再 `from_offset_px`。
+
+- `targets`：数组，元素为唯一名称、正整数 ID 或 `fnmatch` 通配符。显式列表保持给定顺序；通配符匹配按名称自然排序（数字段按数值比较）。同一形状被解析两次会报错。第 1 条保留原 `trigger`/`delay`，第 i 条改 `with-previous`、`delay = 原 delay + i×stagger`。
+- `stagger`：非负秒数，只能与 `targets` 同用，可省略（默认 0）。
+- `from_offset_px`：只允许入场效果，`[dx, dy]` 是设计画布像素，正 y 向下。在同一个入场行内追加 `ppt_x` / `ppt_y` 的 `p:anim`：`tm=0` 为 `#ppt_x+dx` / `#ppt_y+dy`，`tm=100000` 为 `#ppt_x` / `#ppt_y`；`duration` 继承，`p:anim` 的 `decel` 取 `offset_decelerate`（默认 0.85）。不能与 `path`、`path_px`、`trigger_shape`、`repeat*`、`auto_reverse`、`rewind`、`restart`、`bounce_end`、`build` 同用；`[0, 0]` 报错。
+- `build`：只接受 `"paragraph"`，作用于有实际文本的入场/强调目标；与 `iterate`、`from_offset_px`、`repeat` 互斥。展开成每个段落一行，行内所有 `p:spTgt` 带 `<p:txEl><p:pRg st="i" end="i"/></p:txEl>`；`trigger: on-click` 时每段一个新点击组，`after-previous` 时逐段自动接续，`with-previous` 时首段跟随前一项、后续改为点击。写入 `p:bldP build="p"`。
+- `iterate`：`{"by": "letter"|"word", "delay": 秒}`，只作用于有实际文本的入场/强调目标。`delay` 写 `p:tmAbs`（毫秒）；省略时写 PowerPoint 默认的 `p:tmPct val="10000"`（10% 时长）。
+
+报告里的 `requested_rows` 是计划条目数，`expanded_rows` 是展开后的实际行数；`expansions` 标出每条语法糖生成了几行。
 
 ## 触发与调度
 
@@ -92,10 +114,13 @@ D 从 1.01 秒开始，因为最长分支 C 在 `0.36 + 0.65 = 1.01` 秒结束�
 one_play = duration × (2 if auto_reverse else 1)
 repeat_count 存在：playback = one_play × repeat_count
 repeat_duration 存在：playback = repeat_duration
+repeat 存在：playback = 无限，不更新 timeline_end
 否则：playback = one_play
 ```
 
-`after-previous` 使用上述实际时长，不只看单程 `duration`。
+`after-previous` 使用上述实际时长，不只看单程 `duration`。无限重复的行不参与 `timeline_end`；同一点击组里它后面紧跟 `after-previous` 会报错，后续内容应改用 `with-previous` 加显式 delay。
+
+`repeat: "until-next-click"` 写 `p:cTn@repeatCount="indefinite"` 加 `p:endCondLst/p:cond evt="onNext"`（目标 `p:sldTgt`）；`"until-end-of-slide"` 只写 `repeatCount="indefinite"`。两者都与 `repeat_count` / `repeat_duration` 互斥。`p:cTn` 子元素顺序固定：`stCondLst → endCondLst → iterate → childTnLst`。
 
 ## 平滑、回弹与终点状态
 
@@ -117,9 +142,23 @@ repeat_duration 存在：playback = repeat_duration
 - `E`：结束，必须位于末尾。
 - 数字使用普通十进制，不接受科学计数法、Q、弧线、H/V 或隐式相对命令。
 
-`path` 的 x、y 分别除以幻灯片宽和高。`path_px` 先按 96 DPI 将像素乘以 9525 转为 EMU，再除以 `p:sldSz` 的宽和高。常用 1280×720 设计坐标因此可直接用于 16:9 页面。
+`path` 的 x、y 分别除以幻灯片宽和高。`path_px` 按 96 DPI 将像素乘以 9525 转为 EMU，再除以 `p:sldSz` 的宽和高；16:9 页面等于 1280×720 画布。设计稿是 1920×1080 时，必须在顶层写 `canvas_px: [1920, 1080]`，此时 x、y 直接除以画布宽高。`canvas_px` 的宽高比与 `p:sldSz` 不一致会报错，避免 x/y 独立缩放造成路径变形。
 
 默认 `pathEditMode="relative"`；`effect_options: {"relative": false}` 使用 `fixed`。所有 MCE 分支中的真实路径都必须与计划完全一致。验证器另用标准路径的内存副本核对其他原生行为，防止自定义路径绕过行为树校验。
+
+## 文本构建
+
+- `iterate`：效果行的 `p:cTn` 写 `p:iterate type="lt" | "wd"`；`delay` 用 `p:tmAbs`（毫秒），省略时写 `p:tmPct val="10000"`（10% 时长）。
+- `build`：`p:timing/p:bldLst` 写 `p:bldP spid="..." grpId="0" build="p"`；效果行按段落展开，每行 `p:spTgt` 带 `<p:txEl><p:pRg st="i" end="i"/></p:txEl>`。
+- 两者只作用于有实际文本的入场/强调目标，且互斥。
+
+## 时间线
+
+```bash
+$PY scripts/native_ppt_anim.py timeline deck.pptx --slide 4
+```
+
+按点击组输出每条动画的目标、效果、`start_s`、`end_s`、`duration_s`、重复状态。时间来自真实 `p:timing` 读回，不另算一套调度；无限重复行输出 `end_s: null`。交互序列按触发形状单独分组。
 
 ## Transition 字段
 
@@ -128,17 +167,19 @@ repeat_duration 存在：playback = repeat_duration
   effect: "fade",             // 原生切换名，或 morph；none 表示移除视觉切换
   duration: 0.5,              // 正秒数
   effect_options: {},         // 用 describe-transition 查询
-  advance_after: 2.0,          // 非负秒数，可选
+  advance_after: 2.0,          // 正秒数，可选；0 表示立即翻页，拒绝
   advance_on_click: true       // 可选
 }
 ```
 
 - 有 `effect`：明确替换本页视觉切换。
+- `duration` / `effect_options` 必须搭配显式 `effect`，只写这两个会报错。
 - 无 `effect` 但有翻页字段：保留视觉切换，仅修改推进方式。
 - 只有 `advance_after`：自动推进并关闭单击推进。
 - 同时有 `advance_after` 和 `advance_on_click: true`：两者均可推进。
 - 只有 `advance_on_click: true`：改为仅单击。
 - `advance_on_click: false` 必须搭配 `advance_after`。
+- Morph 只能写在第 2 页及以后；第 1 页没有源页，直接报错。
 
 任何 `advance_after` 都会设置 `ppt/presProps.xml` 的 `p:showPr@useTimings=1`，并验证相关关系和内容类型。
 
@@ -161,13 +202,6 @@ slide 2: 形状名称 !!hero，transition=morph
 
 ## 错误与原子性
 
-以下情况不会发布输出：
+未知字段/效果、非法组合、页码越界、重名或重复目标、画布比例不符、未声明的已有时间线、自定义路径回读不一致、Morph 配对或自动翻页元数据错误，都会在发布前报错，不产出文件。
 
-- JSON 未知字段、未知效果或非法参数组合。
-- 页码越界、重复页面计划、重复/缺失形状名称。
-- 未明确允许却遇到已有时间线。
-- 时间节点 ID 重复、引用不存在的形状、MCE 前缀未绑定。
-- 自定义路径不一致、原生行为树变化、时长/偏移/触发回读不一致。
-- ZIP CRC、XML、内部关系目标、Morph 配对或自动翻页元数据错误。
-
-输出先写同目录临时文件，验证失败则删除；成功后原子替换目标。输入与输出可以是同一路径，但仍建议保留原文件副本。
+输出先写目标目录内的临时文件，全部校验通过后才 `os.replace` 到目标；失败只删临时文件。输入与输出可以是同一路径，原文件在校验通过前不会被替换。

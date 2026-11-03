@@ -31,19 +31,4 @@ def to_in(anc, key, left, top, width, height):
 
 ## 包与关系检查
 
-```python
-import zipfile
-from lxml import etree
-
-with zipfile.ZipFile(path) as zf:
-    assert zf.testzip() is None
-    for name in zf.namelist():
-        if name.endswith((".xml", ".rels")):
-            etree.fromstring(zf.read(name))
-```
-
-继续检查关系 Target 是否存在、Content_Types 是否覆盖新增部件、是否出现重复 notesSlide 关系。部件数量变化本身不是错误；重点检查非预期丢失，如嵌入字体、VBA、媒体或备注。
-
-python-pptx 会重新序列化包。修改前后比较部件清单，只把无法由本次编辑解释的丢失视为问题。定位演示页使用 `prs.slides[i].part.partname`，不要按 slideN.xml 文件名猜顺序。
-
-重复探测使用新输出路径并关闭文件句柄，以避免占用和旧文件混淆；不要把文件名本身当成损坏原因。
+`validate` 已覆盖 ZIP CRC、XML 可解析、关系 Target 存在、Content_Types 与重复 notesSlide 检查；自己写脚本时只需额外核对非预期丢失（嵌入字体、VBA、媒体、备注）。部件数量变化本身不是错误。python-pptx 会重新序列化包，修改前后比较部件清单，只把无法由本次编辑解释的丢失视为问题。定位演示页使用 `prs.slides[i].part.partname`，不要按 `slideN.xml` 文件名猜顺序。重复探测使用新输出路径并关闭文件句柄。

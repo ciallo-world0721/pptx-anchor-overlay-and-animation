@@ -46,18 +46,7 @@ def audit(path: Path) -> list[dict]:
             seq = slide.TimeLine.MainSequence
             effects = []
             for i in range(1, seq.Count + 1):
-                fx = seq.Item(i)
-                effects.append(
-                    {
-                        "index": i,
-                        "shape": _shape_name(fx),
-                        "effect_type": fx.EffectType,
-                        "trigger": fx.Timing.TriggerType,
-                        "exit": fx.Exit,
-                        "duration_s": round(fx.Timing.Duration, 4),
-                        "delay_s": round(fx.Timing.TriggerDelayTime, 4),
-                    }
-                )
+                effects.append(_effect_row(i, seq.Item(i)))
             interactive = []
             for s in range(1, slide.TimeLine.InteractiveSequences.Count + 1):
                 iseq = slide.TimeLine.InteractiveSequences.Item(s)
@@ -104,11 +93,37 @@ def audit(path: Path) -> list[dict]:
             pass
 
 
+def _safe(getter, default=None):
+    try:
+        return getter()
+    except Exception:
+        return default
+
+
 def _shape_name(effect) -> str:
     try:
         return effect.Shape.Name
     except Exception:
         return "<none>"
+
+
+def _effect_row(index: int, effect) -> dict:
+    timing = effect.Timing
+    return {
+        "index": index,
+        "shape": _shape_name(effect),
+        "effect_type": effect.EffectType,
+        "trigger": timing.TriggerType,
+        "exit": effect.Exit,
+        "duration_s": round(timing.Duration, 4),
+        "delay_s": round(timing.TriggerDelayTime, 4),
+        "paragraph": _safe(lambda: int(effect.Paragraph)),
+        "build_by_level": _safe(lambda: int(timing.BuildByLevelEffect)),
+        "repeat_count": _safe(lambda: round(float(timing.RepeatCount), 4)),
+        "auto_reverse": _safe(lambda: bool(timing.AutoReverse)),
+        "rewind": _safe(lambda: bool(timing.Rewind)),
+        "behaviors": _safe(lambda: int(effect.Behaviors.Count)),
+    }
 
 
 def main() -> None:

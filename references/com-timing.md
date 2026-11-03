@@ -65,7 +65,7 @@ Behavior 常用类型：Motion=1、Scale=3、Rotation=4、Set=8。涉及多个�
 - 同一步并列效果：`withEffect`。
 - 延时在效果自己的 `cTn/stCondLst/cond@delay`。
 - 形状点击触发使用 `interactiveSeq`，其条件包含 `evt="onClick"` 与目标 `spTgt`。
-- 一页只能有一个直接 `p:timing`；已有媒体节点时在其 tmRoot 内复用结构。
+- 一页只能有一个直接 `p:timing`；`replace_existing` 会保留 `p:audio` / `p:video` 子树并重挂到新 tmRoot。
 
 ## COM 读回的正确解释
 

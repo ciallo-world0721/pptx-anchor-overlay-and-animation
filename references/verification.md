@@ -2,14 +2,14 @@
 
 ## 六层验证
 
-按顺序执行，任何一层通过都不能替下一层背书。
+按顺序执行，任何一层通过都不能替下一层背书；每层能证明/不能证明什么见 `SKILL.md` §5。
 
-1. **输入检查** — `inspect deck.pptx`：页面顺序（按 `presentation.xml → rels → slide part`，不是文件名）、形状名/ID、已有时间线、已有切换。
-2. **包检查** — `validate out.pptx`：ZIP CRC、XML 可解析、关系目标存在、时间节点 ID 唯一、形状引用有效、MCE 前缀已绑定。
-3. **语义回读** — `validate out.pptx --spec plan.json`：逐行核对效果、目标、触发、偏移、单程/实际时长、重复、自动反向、平滑、回弹、终点状态、自定义路径。工具重新读盘，不信任生成时的内存状态。
-4. **静态渲染** — PowerPoint `Export` 或 LibreOffice 导出 PDF/PNG：证明页面与对象能渲染，不证明任何动画行为。
+1. **输入** — `inspect deck.pptx`：页面顺序、形状名/ID、已有时间线与切换。
+2. **包** — `validate out.pptx`：ZIP/OPC、XML、关系、时间节点、形状引用、MCE 前缀。
+3. **语义** — `validate out.pptx --spec plan.json`：重新读盘，逐行核对效果、目标、触发、偏移、时长、重复、反向、平滑、回弹、终点状态与自定义路径。
+4. **静态渲染** — PowerPoint `Export` 或 LibreOffice 导出 PDF/PNG：只证明页面能渲染。
 5. **COM 读回** — `pptx_com_audit.py`：PowerPoint 自己解析这棵时间树。
-6. **放映 + 保存往返** — 用户在 PowerPoint 点一遍；另存副本后重跑 `inspect` / `validate`，确认动画未被重写或丢失。
+6. **放映 + 保存往返** — 用户点一遍；另存副本后重跑 `inspect` / `validate`，确认动画未被重写或丢失。
 
 ## COM 读回
 
@@ -46,12 +46,3 @@ $PY scripts/pptx_com_audit.py animated.pptx --report com-audit.json
 - **串行等最长分支**：后续行动画用 `after-previous`，不要手算固定等待。
 - **循环必须算墙钟**：`auto_reverse` 翻倍、`repeat_count` 乘算；自动翻页时间不早于最长分支。
 - **Morph 保持对象类型稳定**：换类型就改用对象动画或单独过渡。
-
-## 稳定性约束
-
-- 不覆盖未请求修改的页面；未列出的 part 保持原样。
-- 不静默替换未知效果，不忽略未知字段。
-- 不按文件名猜页码，不任意选择重名形状。
-- 不用 GIF、视频、逐帧图片或网页动画冒充原生动画。
-- 不把「包含 p:timing」当可播放证据；行内必须有真实行为节点（`set` / `animEffect` / `animMotion` / `animRot`）。
-- 不把 LibreOffice 打开成功、`validate` 通过或 COM 计数正确，写成放映已验收。

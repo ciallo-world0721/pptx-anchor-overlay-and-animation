@@ -406,6 +406,14 @@ class AnimationTarget:
     trigger_shape_id: int | None = None
     repeat_count: float | None = None
     repeat_duration_ms: int | None = None
+    repeat_mode: str | None = None
+    iterate_type: str | None = None
+    iterate_delay_ms: int | None = None
+    build: str | None = None
+    paragraph_index: int | None = None
+    offset_x: float | None = None
+    offset_y: float | None = None
+    offset_decelerate: float | None = None
     auto_reverse: bool | None = None
     rewind: bool | None = None
     accelerate: float | None = None
@@ -418,8 +426,17 @@ class AnimationTarget:
     sound_name: str | None = None
 
     @property
+    def is_indefinite(self) -> bool:
+        """Return whether the row repeats until a click or the slide ends."""
+        return self.repeat_mode is not None
+
+    @property
     def playback_duration_ms(self) -> int:
         """Return the wall-clock duration used by after-previous scheduling."""
+        if self.repeat_mode is not None:
+            # An indefinite row never advances the group's timeline_end; the
+            # scheduler treats it separately instead of guessing a finite end.
+            return 0
         one_play = self.duration_ms * (2 if self.auto_reverse else 1)
         if self.repeat_duration_ms is not None:
             return self.repeat_duration_ms
@@ -446,6 +463,9 @@ class AnimationRowSummary:
     trigger_shape_id: int | None
     repeat_count: float | None
     repeat_duration_ms: int | None
+    repeat_mode: str | None
+    iterate_type: str | None
+    iterate_delay_ms: int | None
     auto_reverse: bool
     rewind: bool
     accelerate: float
@@ -861,6 +881,14 @@ def _normalize_target_mapping(
         'trigger',
         'trigger_shape_id',
         *ANIMATION_TIMING_OPTION_FIELDS,
+        'repeat_mode',
+        'iterate_type',
+        'iterate_delay_ms',
+        'build',
+        'paragraph_index',
+        'offset_x',
+        'offset_y',
+        'offset_decelerate',
         'after_effect',
         'sound',
     }
@@ -929,6 +957,92 @@ def _normalize_target_mapping(
         raise ValueError(
             'animation repeat_count and repeat_duration are mutually exclusive'
         )
+    repeat_mode = target.get('repeat_mode')
+    if repeat_mode is not None and repeat_mode not in {
+        'until-next-click',
+        'until-end-of-slide',
+    }:
+        raise ValueError(
+            'animation repeat_mode must be until-next-click or '
+            f'until-end-of-slide: {repeat_mode!r}'
+        )
+    if repeat_mode is not None and (
+        repeat_count is not None or repeat_duration_ms is not None
+    ):
+        raise ValueError(
+            'animation repeat_mode and repeat_count/repeat_duration are '
+            'mutually exclusive'
+        )
+    brand = NATIVE_ANIMATIONS[effect]['category']
+    iterate_type = target.get('iterate_type')
+    if iterate_type is not None and iterate_type not in {'letter', 'word'}:
+        raise ValueError(
+            f'animation iterate_type must be letter or word: {iterate_type!r}'
+        )
+    iterate_delay_ms = (
+        _non_negative_milliseconds(
+            target['iterate_delay_ms'],
+            'animation iterate_delay_ms',
+        )
+        if target.get('iterate_delay_ms') is not None
+        else None
+    )
+    if iterate_type is not None and brand not in {'entrance', 'emphasis'}:
+        raise ValueError(
+            'animation iterate_type requires an entrance or emphasis effect'
+        )
+    build = target.get('build')
+    if build is not None and build != 'paragraph':
+        raise ValueError(f'animation build must be paragraph: {build!r}')
+    if build is not None and brand not in {'entrance', 'emphasis'}:
+        raise ValueError(
+            'animation build paragraph requires an entrance or emphasis effect'
+        )
+    if build is not None and iterate_type is not None:
+        raise ValueError(
+            'animation build paragraph and iterate_type are mutually exclusive'
+        )
+    paragraph_index = target.get('paragraph_index')
+    if paragraph_index is not None:
+        if (
+            isinstance(paragraph_index, bool)
+            or not isinstance(paragraph_index, int)
+            or paragraph_index < 0
+        ):
+            raise ValueError(
+                f'animation paragraph_index must be a non-negative integer: '
+                f'{paragraph_index!r}'
+            )
+        if build != 'paragraph':
+            raise ValueError(
+                'animation paragraph_index requires build paragraph'
+            )
+    offset_x = (
+        _finite_number(target['offset_x'], 'animation offset_x')
+        if target.get('offset_x') is not None
+        else None
+    )
+    offset_y = (
+        _finite_number(target['offset_y'], 'animation offset_y')
+        if target.get('offset_y') is not None
+        else None
+    )
+    if (offset_x is None) != (offset_y is None):
+        raise ValueError('animation offset_x and offset_y must be provided together')
+    if offset_x is not None and brand != 'entrance':
+        raise ValueError('animation position offset requires an entrance effect')
+    offset_decelerate = (
+        _optional_ratio(
+            target['offset_decelerate'],
+            'animation offset_decelerate',
+        )
+        if target.get('offset_decelerate') is not None
+        else None
+    )
+    if offset_decelerate is not None and offset_x is None:
+        raise ValueError(
+            'animation offset_decelerate requires a position offset'
+        )
     auto_reverse = (
         _optional_bool(target['auto_reverse'], 'animation auto_reverse')
         if 'auto_reverse' in target
@@ -987,6 +1101,14 @@ def _normalize_target_mapping(
         trigger_shape_id=trigger_shape_id,
         repeat_count=repeat_count,
         repeat_duration_ms=repeat_duration_ms,
+        repeat_mode=repeat_mode,
+        iterate_type=iterate_type,
+        iterate_delay_ms=iterate_delay_ms,
+        build=build,
+        paragraph_index=paragraph_index,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        offset_decelerate=offset_decelerate,
         auto_reverse=auto_reverse,
         rewind=rewind,
         accelerate=accelerate,
@@ -1510,13 +1632,134 @@ def animation_effect_supports_bounce_end(
     return bool(_interpolated_behavior_nodes(row))
 
 
+_CTN_CHILD_ORDER = (
+    'stCondLst',
+    'endCondLst',
+    'endSync',
+    'iterate',
+    'childTnLst',
+    'subTnLst',
+)
+
+
+def _insert_ctn_child(ctn: ET.Element, child: ET.Element) -> None:
+    """Insert a child in CT_TLCommonTimeNodeData schema order."""
+    tag = _local_name(child.tag)
+    position = _CTN_CHILD_ORDER.index(tag)
+    insert_at = len(ctn)
+    for index, existing in enumerate(ctn):
+        name = _local_name(existing.tag)
+        if name in _CTN_CHILD_ORDER and _CTN_CHILD_ORDER.index(name) > position:
+            insert_at = index
+            break
+    ctn.insert(insert_at, child)
+
+
+def _format_signed_fraction(value: float) -> str:
+    rendered = format(value, "+.12f").rstrip("0").rstrip(".")
+    return "" if rendered in {"+0", "-0"} else rendered
+
+
+def _append_position_animation(
+    row: ET.Element,
+    target: AnimationTarget,
+    axis: str,
+    offset: float | None,
+) -> None:
+    if offset is None or abs(offset) < 1e-12:
+        return
+    children = row.find(_qn(PML_NS, 'childTnLst'))
+    if children is None:
+        return
+    animation = ET.SubElement(
+        children,
+        _qn(PML_NS, 'anim'),
+        {'calcmode': 'lin', 'valueType': 'num'},
+    )
+    behavior = ET.SubElement(animation, _qn(PML_NS, 'cBhvr'))
+    timing_attrs = {
+        'dur': str(target.duration_ms),
+        'fill': 'hold',
+    }
+    if target.offset_decelerate:
+        timing_attrs['decel'] = str(round(target.offset_decelerate * 100000))
+    ET.SubElement(behavior, _qn(PML_NS, 'cTn'), timing_attrs)
+    target_element = ET.SubElement(behavior, _qn(PML_NS, 'tgtEl'))
+    ET.SubElement(
+        target_element,
+        _qn(PML_NS, 'spTgt'),
+        {'spid': str(target.shape_id)},
+    )
+    names = ET.SubElement(behavior, _qn(PML_NS, 'attrNameLst'))
+    ET.SubElement(names, _qn(PML_NS, 'attrName')).text = f'ppt_{axis}'
+    values = ET.SubElement(animation, _qn(PML_NS, 'tavLst'))
+    start = ET.SubElement(values, _qn(PML_NS, 'tav'), {'tm': '0'})
+    start_value = ET.SubElement(ET.SubElement(start, _qn(PML_NS, 'val')), _qn(PML_NS, 'strVal'))
+    start_value.set(
+        'val',
+        f"#ppt_{axis}{_format_signed_fraction(offset)}",
+    )
+    end = ET.SubElement(values, _qn(PML_NS, 'tav'), {'tm': '100000'})
+    end_value = ET.SubElement(ET.SubElement(end, _qn(PML_NS, 'val')), _qn(PML_NS, 'strVal'))
+    end_value.set('val', f'#ppt_{axis}')
+
+
 def _apply_timing_options(row: ET.Element, target: AnimationTarget) -> None:
+    if target.repeat_mode is not None:
+        row.set('repeatCount', 'indefinite')
+        row.attrib.pop('repeatDur', None)
+        existing_end = row.find(_qn(PML_NS, 'endCondLst'))
+        if existing_end is not None:
+            row.remove(existing_end)
+        if target.repeat_mode == 'until-next-click':
+            end_conditions = ET.Element(_qn(PML_NS, 'endCondLst'))
+            condition = ET.SubElement(
+                end_conditions,
+                _qn(PML_NS, 'cond'),
+                {'evt': 'onNext', 'delay': '0'},
+            )
+            target_element = ET.SubElement(condition, _qn(PML_NS, 'tgtEl'))
+            ET.SubElement(target_element, _qn(PML_NS, 'sldTgt'))
+            _insert_ctn_child(row, end_conditions)
     if target.repeat_count is not None:
         row.set('repeatCount', str(round(target.repeat_count * 1000)))
         row.attrib.pop('repeatDur', None)
     if target.repeat_duration_ms is not None:
         row.set('repeatDur', str(target.repeat_duration_ms))
         row.attrib.pop('repeatCount', None)
+    if target.iterate_type is not None:
+        existing_iterate = row.find(_qn(PML_NS, 'iterate'))
+        if existing_iterate is not None:
+            row.remove(existing_iterate)
+        iterate = ET.Element(
+            _qn(PML_NS, 'iterate'),
+            {'type': 'wd' if target.iterate_type == 'word' else 'lt'},
+        )
+        if target.iterate_delay_ms is None:
+            ET.SubElement(iterate, _qn(PML_NS, 'tmPct'), {'val': '10000'})
+        else:
+            ET.SubElement(
+                iterate,
+                _qn(PML_NS, 'tmAbs'),
+                {'val': str(target.iterate_delay_ms)},
+            )
+        _insert_ctn_child(row, iterate)
+    _append_position_animation(row, target, 'x', target.offset_x)
+    _append_position_animation(row, target, 'y', target.offset_y)
+    if target.paragraph_index is not None:
+        for sp_target in row.iter(_qn(PML_NS, 'spTgt')):
+            existing = sp_target.find(_qn(PML_NS, 'txEl'))
+            if existing is not None:
+                sp_target.remove(existing)
+            text = ET.SubElement(sp_target, _qn(PML_NS, 'txEl'))
+            ET.SubElement(
+                text,
+                _qn(PML_NS, 'pRg'),
+                {
+                    'st': str(target.paragraph_index),
+                    'end': str(target.paragraph_index),
+                },
+            )
     if target.auto_reverse is not None:
         if target.auto_reverse:
             row.set('autoRev', '1')
@@ -1766,11 +2009,19 @@ def _main_target_offsets(targets: Sequence[AnimationTarget]) -> list[int]:
     offsets: list[int] = []
     beat_start_ms = 0
     timeline_end_ms = 0
+    indefinite_seen = False
     for target in targets:
         if target.trigger == 'on-click':
             beat_start_ms = 0
             timeline_end_ms = 0
+            indefinite_seen = False
         elif target.trigger == 'after-previous':
+            if indefinite_seen:
+                raise ValueError(
+                    'after-previous cannot follow an indefinitely repeating '
+                    'effect in the same click group; use with-previous with an '
+                    'explicit delay instead'
+                )
             beat_start_ms = timeline_end_ms
         # With-previous rows share the beat's trigger, before any row delay.
         start_ms = beat_start_ms + target.delay_ms
@@ -1780,7 +2031,10 @@ def _main_target_offsets(targets: Sequence[AnimationTarget]) -> list[int]:
                 f'limit at target {len(offsets) + 1}: {start_ms}'
             )
         offsets.append(start_ms)
-        timeline_end_ms = max(timeline_end_ms, start_ms + target.playback_duration_ms)
+        if target.is_indefinite:
+            indefinite_seen = True
+        else:
+            timeline_end_ms = max(timeline_end_ms, start_ms + target.playback_duration_ms)
     return offsets
 
 
@@ -1968,6 +2222,19 @@ def create_sequence_timing_xml(
         ]
     )
 
+    build_entries: list[str] = []
+    built_shapes: set[int] = set()
+    for target in normalized_targets:
+        if target.build == 'paragraph' and target.shape_id not in built_shapes:
+            built_shapes.add(target.shape_id)
+            build_entries.append(
+                f'<p:bldP spid="{target.shape_id}" grpId="0" build="p"/>'
+            )
+    build_list_xml = (
+        f'    <p:bldLst>{"".join(build_entries)}</p:bldLst>\n'
+        if build_entries
+        else ''
+    )
     timing_xml = f'''  <p:timing>
     <p:tnLst>
       <p:par>
@@ -1978,7 +2245,7 @@ def create_sequence_timing_xml(
         </p:cTn>
       </p:par>
     </p:tnLst>
-  </p:timing>'''
+{build_list_xml}  </p:timing>'''
     if not any(target.bounce_end for target in normalized_targets):
         return timing_xml
 
@@ -2385,6 +2652,9 @@ def _timing_summary(
 ) -> tuple[
     float | None,
     int | None,
+    str | None,
+    str | None,
+    int | None,
     bool,
     bool,
     float,
@@ -2395,11 +2665,20 @@ def _timing_summary(
 ]:
     raw_repeat_count = row.get('repeatCount')
     repeat_count = None
-    if raw_repeat_count is not None:
+    repeat_mode = None
+    if raw_repeat_count == 'indefinite':
+        repeat_mode = 'until-end-of-slide'
+        end_conditions = row.find(_qn(PML_NS, 'endCondLst'))
+        if end_conditions is not None:
+            for condition in end_conditions.findall(_qn(PML_NS, 'cond')):
+                if condition.get('evt') == 'onNext':
+                    repeat_mode = 'until-next-click'
+                    break
+    elif raw_repeat_count is not None:
         if not re.fullmatch(r'\d+', raw_repeat_count):
             errors.append(
-                f'object-animation repeatCount must be numeric; found '
-                f'{raw_repeat_count!r}'
+                f'object-animation repeatCount must be numeric or indefinite; '
+                f'found {raw_repeat_count!r}'
             )
         else:
             repeat_count = int(raw_repeat_count) / 1000
@@ -2415,6 +2694,32 @@ def _timing_summary(
             repeat_duration_ms = int(raw_repeat_duration)
     if repeat_count is not None and repeat_duration_ms is not None:
         errors.append('object-animation row sets both repeatCount and repeatDur')
+    if repeat_mode is not None and repeat_duration_ms is not None:
+        errors.append('object-animation indefinite row also sets repeatDur')
+
+    iterate_type = None
+    iterate_delay_ms = None
+    iterate = row.find(_qn(PML_NS, 'iterate'))
+    if iterate is not None:
+        raw_type = iterate.get('type')
+        if raw_type not in {'lt', 'wd'}:
+            errors.append(
+                f'object-animation iterate type must be lt or wd; found {raw_type!r}'
+            )
+        else:
+            iterate_type = 'letter' if raw_type == 'lt' else 'word'
+        tm_abs = iterate.find(_qn(PML_NS, 'tmAbs'))
+        tm_pct = iterate.find(_qn(PML_NS, 'tmPct'))
+        if tm_abs is not None and tm_pct is not None:
+            errors.append('object-animation iterate sets both tmAbs and tmPct')
+        elif tm_abs is not None:
+            raw_delay = tm_abs.get('val')
+            if raw_delay is None or not re.fullmatch(r'\d+', raw_delay):
+                errors.append(
+                    f'object-animation iterate tmAbs must be numeric; found {raw_delay!r}'
+                )
+            else:
+                iterate_delay_ms = int(raw_delay)
 
     def ratio(attribute: str) -> float:
         raw = row.get(attribute)
@@ -2479,7 +2784,7 @@ def _timing_summary(
         restart = 'never'
 
     playback_duration_ms = None
-    if duration_ms is not None:
+    if repeat_mode is None and duration_ms is not None:
         one_play = duration_ms * (2 if auto_reverse else 1)
         if repeat_duration_ms is not None:
             playback_duration_ms = repeat_duration_ms
@@ -2490,6 +2795,9 @@ def _timing_summary(
     return (
         repeat_count,
         repeat_duration_ms,
+        repeat_mode,
+        iterate_type,
+        iterate_delay_ms,
         auto_reverse,
         rewind,
         accelerate,
@@ -2659,6 +2967,55 @@ def _row_offset_ms(
     return leaf_delay or 0
 
 
+def _row_position_offsets(
+    row: ET.Element,
+) -> tuple[float | None, float | None, float | None]:
+    offsets: dict[str, float] = {}
+    decelerate: float | None = None
+    for animation in row.iter(_qn(PML_NS, 'anim')):
+        names = [
+            name.text
+            for name in animation.iter(_qn(PML_NS, 'attrName'))
+        ]
+        axis = next(
+            (name[-1] for name in names if name in {'ppt_x', 'ppt_y'}),
+            None,
+        )
+        if axis is None:
+            continue
+        start = animation.find(
+            f"{_qn(PML_NS, 'tavLst')}/{_qn(PML_NS, 'tav')}"
+        )
+        if start is None or start.get('tm') != '0':
+            continue
+        value = start.find(
+            f"{_qn(PML_NS, 'val')}/{_qn(PML_NS, 'strVal')}"
+        )
+        raw = value.get('val') if value is not None else None
+        match = re.fullmatch(r'#ppt_[xy]([-+][0-9.]+)', raw or '')
+        if match is None:
+            continue
+        offsets[axis] = float(match.group(1))
+        timing = animation.find(f"{_qn(PML_NS, 'cBhvr')}/{_qn(PML_NS, 'cTn')}")
+        if timing is not None and timing.get('decel') is not None:
+            decelerate = int(timing.get('decel')) / 100000
+    return offsets.get('x'), offsets.get('y'), decelerate
+
+
+def _row_paragraph_index(row: ET.Element) -> int | None:
+    for target in row.iter(_qn(PML_NS, 'spTgt')):
+        text = target.find(_qn(PML_NS, 'txEl'))
+        if text is None:
+            continue
+        paragraph = text.find(_qn(PML_NS, 'pRg'))
+        if paragraph is None:
+            continue
+        start = paragraph.get('st')
+        if start is not None and start.isdigit():
+            return int(start)
+    return None
+
+
 def _row_matches_powerpoint_behavior(
     row: ET.Element,
     *,
@@ -2669,6 +3026,10 @@ def _row_matches_powerpoint_behavior(
     duration_ms: int,
     repeat_count: float | None,
     repeat_duration_ms: int | None,
+    repeat_mode: str | None,
+    iterate_type: str | None,
+    iterate_delay_ms: int | None,
+    build: str | None,
     auto_reverse: bool,
     rewind: bool,
     accelerate: float,
@@ -2682,6 +3043,8 @@ def _row_matches_powerpoint_behavior(
 ) -> bool:
     """Match one read-back row to its reconstructed native behavior tree."""
     spec = NATIVE_ANIMATIONS[effect]
+    offset_x, offset_y, offset_decelerate = _row_position_offsets(row)
+    paragraph_index = _row_paragraph_index(row)
     target = AnimationTarget(
         shape_id=shape_id,
         delay_ms=0,
@@ -2691,6 +3054,14 @@ def _row_matches_powerpoint_behavior(
         trigger=trigger,
         repeat_count=repeat_count,
         repeat_duration_ms=repeat_duration_ms,
+        repeat_mode=repeat_mode,
+        iterate_type=iterate_type,
+        iterate_delay_ms=iterate_delay_ms,
+        build=build,
+        paragraph_index=paragraph_index,
+        offset_x=offset_x,
+        offset_y=offset_y,
+        offset_decelerate=offset_decelerate,
         auto_reverse=True if auto_reverse else None,
         rewind=True if rewind else None,
         # Explicit zero smoothing removes a preset's default accel/decel
@@ -2729,6 +3100,17 @@ def _row_matches_powerpoint_behavior(
                 requested_duration_ms=duration_ms,
             )
         _apply_timing_options(expected, target)
+        if build == 'paragraph' and any(
+            sp_target.find(_qn(PML_NS, 'bg')) is not None
+            for sp_target in row.iter(_qn(PML_NS, 'spTgt'))
+        ):
+            # PowerPoint adds p:bg on save; accept both representations.
+            for sp_target in expected.iter(_qn(PML_NS, 'spTgt')):
+                if (
+                    sp_target.find(_qn(PML_NS, 'bg')) is None
+                    and sp_target.find(_qn(PML_NS, 'txEl')) is None
+                ):
+                    ET.SubElement(sp_target, _qn(PML_NS, 'bg'))
         row_id = row.get('id')
         expected.set('id', row_id if row_id and row_id.isdigit() else '1')
         _append_after_effect(
@@ -2755,6 +3137,11 @@ def _animation_rows(
         child: parent
         for parent in slide_root.iter()
         for child in list(parent)
+    }
+    built_shapes = {
+        int(build.get('spid'))
+        for build in slide_root.iter(_qn(PML_NS, 'bldP'))
+        if build.get('build') == 'p' and (build.get('spid') or '').isdigit()
     }
     rows: list[AnimationRowSummary] = []
     for row in slide_root.iter(_qn(PML_NS, 'cTn')):
@@ -2797,6 +3184,9 @@ def _animation_rows(
         (
             repeat_count,
             repeat_duration_ms,
+            repeat_mode,
+            iterate_type,
+            iterate_delay_ms,
             auto_reverse,
             rewind,
             accelerate,
@@ -2827,6 +3217,10 @@ def _animation_rows(
                 duration_ms=duration_ms,
                 repeat_count=repeat_count,
                 repeat_duration_ms=repeat_duration_ms,
+                repeat_mode=repeat_mode,
+                iterate_type=iterate_type,
+                iterate_delay_ms=iterate_delay_ms,
+                build='paragraph' if shape_id in built_shapes else None,
                 auto_reverse=auto_reverse,
                 rewind=rewind,
                 accelerate=accelerate,
@@ -2859,6 +3253,9 @@ def _animation_rows(
                 trigger_shape_id=trigger_shape_id,
                 repeat_count=repeat_count,
                 repeat_duration_ms=repeat_duration_ms,
+                repeat_mode=repeat_mode,
+                iterate_type=iterate_type,
+                iterate_delay_ms=iterate_delay_ms,
                 auto_reverse=auto_reverse,
                 rewind=rewind,
                 accelerate=accelerate,
@@ -3305,6 +3702,9 @@ def validate_generated_animation_xml(
         (
             expected_repeat_count,
             expected_repeat_duration_ms,
+            expected_repeat_mode,
+            expected_iterate_type,
+            expected_iterate_delay_ms,
             expected_auto_reverse,
             expected_rewind,
             expected_accelerate,
@@ -3336,6 +3736,17 @@ def validate_generated_animation_xml(
                 if actual_row_id and actual_row_id.isdigit()
                 else '1',
             )
+            if target.build == 'paragraph' and any(
+                sp_target.find(_qn(PML_NS, 'bg')) is not None
+                for sp_target in actual_row_element.iter(_qn(PML_NS, 'spTgt'))
+            ):
+                # PowerPoint adds p:bg on save; accept both representations.
+                for sp_target in expected_behavior_row.iter(_qn(PML_NS, 'spTgt')):
+                    if (
+                        sp_target.find(_qn(PML_NS, 'bg')) is None
+                        and sp_target.find(_qn(PML_NS, 'txEl')) is None
+                    ):
+                        ET.SubElement(sp_target, _qn(PML_NS, 'bg'))
             _append_after_effect(
                 expected_behavior_row,
                 target,
@@ -3414,6 +3825,13 @@ def validate_generated_animation_xml(
                 'repeat_duration_ms',
                 actual.repeat_duration_ms,
                 expected_repeat_duration_ms,
+            ),
+            ('repeat_mode', actual.repeat_mode, expected_repeat_mode),
+            ('iterate_type', actual.iterate_type, expected_iterate_type),
+            (
+                'iterate_delay_ms',
+                actual.iterate_delay_ms,
+                expected_iterate_delay_ms,
             ),
             ('auto_reverse', actual.auto_reverse, expected_auto_reverse),
             ('rewind', actual.rewind, expected_rewind),
