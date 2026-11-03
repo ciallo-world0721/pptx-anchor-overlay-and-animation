@@ -1666,7 +1666,7 @@ def _append_position_animation(
     axis: str,
     offset: float | None,
 ) -> None:
-    if offset is None or abs(offset) < 1e-12:
+    if offset is None:
         return
     children = row.find(_qn(PML_NS, 'childTnLst'))
     if children is None:
@@ -1676,7 +1676,9 @@ def _append_position_animation(
         _qn(PML_NS, 'anim'),
         {'calcmode': 'lin', 'valueType': 'num'},
     )
-    behavior = ET.SubElement(animation, _qn(PML_NS, 'cBhvr'))
+    # PowerPoint's own Fly In writes additive="base" on the position behavior;
+    # without it the tav values are not applied on top of the static position.
+    behavior = ET.SubElement(animation, _qn(PML_NS, 'cBhvr'), {'additive': 'base'})
     timing_attrs = {
         'dur': str(target.duration_ms),
         'fill': 'hold',
@@ -2999,7 +3001,9 @@ def _row_position_offsets(
         timing = animation.find(f"{_qn(PML_NS, 'cBhvr')}/{_qn(PML_NS, 'cTn')}")
         if timing is not None and timing.get('decel') is not None:
             decelerate = int(timing.get('decel')) / 100000
-    return offsets.get('x'), offsets.get('y'), decelerate
+    if not offsets:
+        return None, None, decelerate
+    return offsets.get('x', 0.0), offsets.get('y', 0.0), decelerate
 
 
 def _row_paragraph_index(row: ET.Element) -> int | None:

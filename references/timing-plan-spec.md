@@ -80,7 +80,7 @@ $PY scripts/native_ppt_anim.py inspect input.pptx
 
 - `targets`：数组，元素为唯一名称、正整数 ID 或 `fnmatch` 通配符。显式列表保持给定顺序；通配符匹配按名称自然排序（数字段按数值比较）。同一形状被解析两次会报错。第 1 条保留原 `trigger`/`delay`，第 i 条改 `with-previous`、`delay = 原 delay + i×stagger`。
 - `stagger`：非负秒数，只能与 `targets` 同用，可省略（默认 0）。
-- `from_offset_px`：只允许入场效果，`[dx, dy]` 是设计画布像素，正 y 向下。在同一个入场行内追加 `ppt_x` / `ppt_y` 的 `p:anim`：`tm=0` 为 `#ppt_x+dx` / `#ppt_y+dy`，`tm=100000` 为 `#ppt_x` / `#ppt_y`；`duration` 继承，`p:anim` 的 `decel` 取 `offset_decelerate`（默认 0.85）。不能与 `path`、`path_px`、`trigger_shape`、`repeat*`、`auto_reverse`、`rewind`、`restart`、`bounce_end`、`build` 同用；`[0, 0]` 报错。
+- `from_offset_px`：只允许入场效果，`[dx, dy]` 是设计画布像素，正 y 向下。在同一个入场行内追加 `ppt_x` / `ppt_y` 两条 `p:anim`（即使某个轴为 0 也写），`p:cBhvr` 必须带 `additive="base"`——PowerPoint 原生 Fly In 就是这样写，缺少该属性时位移不会叠加到静态位置。`tm=0` 为 `#ppt_x+dx` / `#ppt_y+dy`，`tm=100000` 为 `#ppt_x` / `#ppt_y`；`duration` 继承，`p:anim` 的 `decel` 取 `offset_decelerate`（默认 0.85）。不能与 `path`、`path_px`、`trigger_shape`、`repeat*`、`auto_reverse`、`rewind`、`restart`、`bounce_end`、`build` 同用；`[0, 0]` 报错。
 - `build`：只接受 `"paragraph"`，作用于有实际文本的入场/强调目标；与 `iterate`、`from_offset_px`、`repeat` 互斥。展开成每个段落一行，行内所有 `p:spTgt` 带 `<p:txEl><p:pRg st="i" end="i"/></p:txEl>`；`trigger: on-click` 时每段一个新点击组，`after-previous` 时逐段自动接续，`with-previous` 时首段跟随前一项、后续改为点击。写入 `p:bldP build="p"`。
 - `iterate`：`{"by": "letter"|"word", "delay": 秒}`，只作用于有实际文本的入场/强调目标。`delay` 写 `p:tmAbs`（毫秒）；省略时写 PowerPoint 默认的 `p:tmPct val="10000"`（10% 时长）。
 

@@ -298,14 +298,34 @@ class NativeAnimationTests(unittest.TestCase):
         self.assertEqual(report["slides_changed"][0]["expanded_rows"], 1)
         timing = timing_root(output)
         animations = list(timing.iter(qn("anim")))
-        self.assertEqual(len(animations), 1)
-        values = animations[0].findall(f"{qn('tavLst')}/{qn('tav')}")
-        start = values[0].find(f"{qn('val')}/{qn('strVal')}").get("val")
-        end = values[1].find(f"{qn('val')}/{qn('strVal')}").get("val")
-        self.assertEqual(start, "#ppt_y+0.022222222222")
-        self.assertEqual(end, "#ppt_y")
+        self.assertEqual(len(animations), 2)
+        by_axis = {}
+        for animation in animations:
+            name = animation.find(
+                f"{qn('cBhvr')}/{qn('attrNameLst')}/{qn('attrName')}"
+            ).text
+            by_axis[name] = animation
+            self.assertEqual(
+                animation.find(qn("cBhvr")).get("additive"),
+                "base",
+                "PowerPoint's own Fly In marks position behaviors additive=base",
+            )
+        y_values = by_axis["ppt_y"].findall(f"{qn('tavLst')}/{qn('tav')}")
         self.assertEqual(
-            animations[0].find(f"{qn('cBhvr')}/{qn('cTn')}").get("decel"),
+            y_values[0].find(f"{qn('val')}/{qn('strVal')}").get("val"),
+            "#ppt_y+0.022222222222",
+        )
+        self.assertEqual(
+            y_values[1].find(f"{qn('val')}/{qn('strVal')}").get("val"),
+            "#ppt_y",
+        )
+        x_values = by_axis["ppt_x"].findall(f"{qn('tavLst')}/{qn('tav')}")
+        self.assertEqual(
+            [value.find(f"{qn('val')}/{qn('strVal')}").get("val") for value in x_values],
+            ["#ppt_x", "#ppt_x"],
+        )
+        self.assertEqual(
+            by_axis["ppt_y"].find(f"{qn('cBhvr')}/{qn('cTn')}").get("decel"),
             "85000",
         )
         self.validate(spec, output)
