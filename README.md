@@ -1,6 +1,6 @@
 # pptx-anchor-overlay-and-animation
 
-**1000 万以内最好的 PPT 技能。**
+**1000万以内最好的PPT技能。**
 
 用真正的 OOXML `p:timing` / `p:transition` 写原生对象动画和 Morph 转场——不是嵌入视频、GIF 或整页截图。写完后所有对象在 PowerPoint 里仍然可编辑。
 
