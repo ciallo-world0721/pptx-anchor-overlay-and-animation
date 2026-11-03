@@ -1,10 +1,8 @@
 # pptx-anchor-overlay-and-animation
 
-**1000万以内最好的PPT技能。**
+**一千万以内最好的PPT技能。**
 
 用真正的 OOXML `p:timing` / `p:transition` 写原生对象动画和 Morph 转场——不是嵌入视频、GIF 或整页截图。写完后所有对象在 PowerPoint 里仍然可编辑。
-
-这是给 AI 助手用的技能（Hermes Agent / Claude 风格的技能目录）：`SKILL.md` 是操作手册，`references/` 是规格，`scripts/` 是引擎。
 
 ## 能做什么
 
