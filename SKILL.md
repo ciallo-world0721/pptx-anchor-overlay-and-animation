@@ -1,7 +1,7 @@
 ---
 name: pptx-anchor-overlay-and-animation
 description: "Use for native PPTX animation, Morph, COM, and overlays. Design the state contract first, then write p:timing from a JSON plan and prove it by PowerPoint read-back."
-version: 3.1.0
+version: 3.2.0
 author: Iris
 license: MIT
 metadata:
@@ -18,6 +18,7 @@ metadata:
 
 - 给现成 `.pptx` 加原生入场/强调/退出、运动路径、点击或形状触发序列
 - 多对象同时旋转、移动、缩放；相邻页之间做 Morph 状态转场
+- 跨页转场（视差、画布外预置）是可选项：先判断内容是否需要空间连续，不需要就正常翻页。
 - 自动翻页、循环放映、重复、自动反向、回弹
 - 要把形状精确叠在自己生成的底图上
 - 审查已有动画：分得清「能播」和「XML 里看着有」
@@ -26,7 +27,7 @@ metadata:
 
 ## 0. 四条不变量
 
-1. **交付原生对象**：图片、形状、文本结束后仍可编辑。不得用嵌入视频、GIF、HTML 或整页截图冒充原生动画；用户明确要媒体路线时才用。
+1. **交付原生对象**：图片、形状、文本结束后仍可编辑。不得用嵌入视频、GIF、HTML 或整页截图冒充**需要点击推进的**动画；非交互的循环动效（氛围、底纹、装饰）按 PPT 制作技能的判据走烘焙媒体。
 2. **先设计状态，再选工具**：先写清起始画面、结束画面、对象对应关系和讲解停留点，不套预设模板。
 3. **终态必须显式成立**：最终位置、尺寸、旋转角直接写在结束页对象上。不要把「动画结束后应该归位」当终态保证。
 4. **结构通过 ≠ 视觉通过**：XML 存在、`validate` 通过、COM 读回数量正确，只证明结构被识别。连续运动、卡顿、遮挡和额外停顿必须由真实放映判断。
@@ -77,12 +78,16 @@ PowerPoint 默认绕形状**包围盒中心**旋转，不是可见图案的中�
 - 同组入场只选一种效果；混用多种入场会让人注意动画本身。
 - 错峰 0.1–0.3 s，不要把一个动画切成十几片硬拼。
 - 强调每页至多一两次；每行文字都加动画等于没有重点。
-- 页面切换 0.3–0.8 s；Morph 只用于对象逻辑连续的两页。
+- 页面切换 0.3–0.8 s（大幅跨页位移按距离另估）；Morph 只用于对象逻辑连续的两页。
 - 讲稿不依赖动画的页，保持静态。
 
 ### 2.6 不夸大 Morph
 
 图片从小变到全屏只是**图片缩放/位移动画**，不能称为「任意遮罩逐渐变形」。不同图片、任意 freeform 遮罩或复杂 crop 之间，Morph 可能退化为淡入淡出。承诺必须限定在实际采用的对象变换上。
+
+### 2.7 跨页转场（可选）
+
+需要时可考虑视差分层（各层位移不同）与画布外预置（下一屏对象先放在画外，由 Morph 带入）。
 
 XML 与几何细节见 `references/design-states.md`。
 
@@ -166,32 +171,27 @@ $PY scripts/pptx_com_audit.py animated.pptx --report com-audit.json
 
 **坐标画布**：`path_px` 按 96 DPI 映射到 `p:sldSz`；16:9 等于 **1280×720**，不是 1920×1080。设计稿是 1920×1080 时，顶层写 `"canvas_px": [1920, 1080]`，否则位移会静默放大 1.5 倍且校验全过。`canvas_px` 的宽高比必须与页面一致，否则报错。
 
-**常用语法糖**（都先展开成普通条目，`apply` 与 `validate --spec` 走同一条路径；完整约束见 `references/timing-plan-spec.md`）：
+**常用语法糖**（展开成普通条目后走同一条路径）：
 
-- `from_offset_px: [dx, dy]`：入场行内写 `ppt_x` / `ppt_y` 的 `p:anim`，`tm=0` 从 `#ppt_y+dy` 到 `tm=100000` 的 `#ppt_y`；不新增行，`duration` 与 `offset_decelerate`（默认 0.85）同条。
-- `targets` + `stagger`：按名称、正整数 ID 或 `fnmatch` 批量展开。通配符按自然排序（`step-2` 在 `step-10` 前），`target` 与 `targets` 互斥，重复命中报错。
-- `repeat: "until-next-click" | "until-end-of-slide"`：无限重复，与 `repeat_count` / `repeat_duration` 互斥。
-- `iterate: {by: "letter"|"word", delay}`：逐字/逐词；`build: "paragraph"`：逐段，展开成每段一行并带 `p:pRg`，与 `iterate` 互斥。
+- `from_offset_px: [dx, dy]`：入场行内补 `ppt_x`/`ppt_y` 偏移，`tm=0` 在偏移处，`tm=100000` 归位。
+- `targets` + `stagger`：按名称、正整数 ID 或 `fnmatch` 批量展开，第 i 条延迟 `原 delay + i×stagger`。
+- `repeat: "until-next-click" | "until-end-of-slide"`：无限循环，与 `repeat_count`/`repeat_duration` 互斥。
+- `iterate: {by: "letter"|"word", delay}` / `build: "paragraph"`：逐字逐词或逐段，两者互斥。
 
 ### 3.4 计划写法
 
 - **先 inspect 再写计划**：名称重复、名称拼错、页码按文件名猜，都会在写入阶段直接失败。
 - 一个页面计划里 `replace_existing: true` 会清掉该页**全部**对象时间线（不影响切换）；只给空 `animations` 也合法，等于清空该页时间线。已有时间线默认受保护；PowerPoint 另存后时间线仍在，所以别指望「打开改两下再套计划」——要么一次规划到位，要么整页重排。
 - 未知效果报错会列出全表；按 `list-effects` / `describe` 查准名字再写，不要凭印象。
+- **显式 0 平滑**：写 `accelerate: 0, decelerate: 0` 才会删掉模板默认缓冲；省略就继承预设，多对象同步时会先后错开。
+- **回弹会吃掉 decel**：非零 `bounce_end` 自动删除继承的减速末端，要求精确定位的装配不要用。
+- **触发形状不能是目标本身**：`trigger_shape` 与 `target` 相同会直接报错。
 
-## 4. 调度与参数语义
+### 3.5 静图换循环视频
 
-同一点击组内：`on-click` 开新组并归零；`with-previous` 从节拍起点加 `delay`；`after-previous` 等**最长分支**结束再加 `delay`。`playback = duration × (auto_reverse ? 2 : 1) × repeat_count`，`repeat_duration` 直接覆盖；无限重复行不更新 `timeline_end`。完整公式与 A/B/C/D 例子见 `references/timing-plan-spec.md`。
+目的页需要持续动效（光束、星闪、火苗）时，可把静态合成图做成循环视频盖在图层上。注意首帧与静态画面一致，否则替换会闪；用入场动画在切换期间隐藏；计划引擎没有媒体字段，时间线需手写；防鼠标进度条的遮罩用纯色加 100% 透明，「无填充」不挡鼠标。
 
-- **显式 0 平滑**：`accel`/`decel` 内部是 0–100000，接口用 0–1；写 `accelerate: 0, decelerate: 0` 才会删掉模板默认缓冲，且 `accelerate + decelerate ≤ 1`。
-- **回弹越界**：非零 `bounce_end` 会自动删除继承的 `decel`，生成 p14 Choice + Fallback；不要用于要求精确定位的同步装配。
-- **触发器**：`trigger_shape` + `trigger: "on-click"`，触发形状与目标必须不同；形状触发效果进独立 `interactiveSeq`，不参与主序列调度。
-- **Morph**：目的页 `{"effect": "morph"}`；源页与目的页相邻、共享至少一个顶层 `!!key`、两侧 OOXML 类型相同。Morph 不能写在第 1 页。
-- **自动翻页**：`transition.advance_after` 必须大于 0；工具同时写放映级 `useTimings=1`。只写 `advTm` 不会自动翻页。
-- **Kiosk**：顶层 `kiosk: true` 设为循环放映；`false` 表示不改动（不是取消）。
-- **COM 路线**（在 PowerPoint 里手工时）：`AddEffect(Shape, EffectId, Level, Trigger, Index)` 第 3 个参数是 Level，图片通常传 0；TriggerType `1=OnPageClick, 2=WithPrevious, 3=AfterPrevious, 4=OnShapeClick`；退出用 `effect.Exit = -1`；入场效果会让对象在播放前隐藏。进程安全与 Behavior 写法见 `references/com-timing.md`。
-
-## 5. 验证：六层，不许跳级
+## 4. 验证：六层，不许跳级
 
 | 层 | 做什么 | 能证明 | 不能证明 |
 |---|---|---|---|
@@ -208,23 +208,15 @@ $PY scripts/pptx_com_audit.py animated.pptx --report com-audit.json
 
 放映复核要点见 `references/verification.md`。
 
-## 6. 边界
+## 5. 边界
 
 - 不做动画音效；不做 COM 写入封装（COM 只作手工路线与验收 oracle）。
 - 自定义路径支持 `M`/`L`/`C`/`E`，不支持 `Q`、弧线、隐式相对命令。需要时明确说明并单独实现，不伪造成功。
-- `path_px` 的默认画布是 96 DPI 映射到 `p:sldSz`（16:9 即 1280×720）；设计稿画布不同必须写 `canvas_px`。
-- `iterate` / `build` 只作用于有实际文本的入场/强调目标；`build` 会展开成每段一行并写 `p:pRg`，不要再手工合并成一行。
-- 一页只有一个直接 `p:timing`；`replace_existing` 会保留原 `p:audio` / `p:video` 子树并重挂到新时间线，报告里的 `preserved_media` 是保留数量。
 - 用户正开着 PowerPoint 时不做 COM 自动化；只管理自己启动的实例，绝不 `Quit()` 用户窗口。
 
-## 7. 参考与脚本
+## 6. 参考与脚本
 
-- `references/design-states.md` — 状态契约、Morph 身份、终态几何、OOXML 片段
-- `references/timing-plan-spec.md` — 计划字段全集、调度公式、路径语法、错误与原子性
-- `references/verification.md` — 六层验证、放映复核、流畅度调节、COM 审计
-- `references/com-timing.md` — COM 进程安全、AddEffect、Behavior、手写 timing 的必要条件
-- `references/layout-and-integrity.md` — 锚点契约、叠加、包与关系检查
-- `references/provenance-licensing.md` — 预设来源与复用许可
+- `references/`：`design-states`（Morph 的 OOXML 与几何）、`timing-plan-spec`（字段全集、调度公式、路径语法）、`verification`（COM 读回与放映复核）、`com-timing`（COM 进程安全与手写 timing）、`layout-and-integrity`（锚点叠加与包检查）、`provenance-licensing`（预设来源）
 - `scripts/native_ppt_anim.py` + `scripts/vendor/` — 计划引擎与 203 预设（MIT，见 vendor/LICENSE）
-- `scripts/tests/test_native_ppt_anim.py` — 回归用例（语法糖展开、无限重复、逐字/逐段、timeline、旧计划兼容）
+- `scripts/tests/test_native_ppt_anim.py` — 回归用例
 - `scripts/pptx_com_audit.py` — PowerPoint 读回

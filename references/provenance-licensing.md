@@ -8,6 +8,5 @@
 
 1. `presetID` + `presetClass` 存在 ≠ 会播放；行内必须有 `set` / `animEffect` / `animMotion` / `animRot` 等行为节点。
 2. 部分填充透明度写法能被解析、但放映时静默无效；透明度应走原生可见性 + `animEffect` 组合。
-3. COM 数量、XML 校验、静态渲染都不能替代真实放映验收。
 
 官方结构参考：[Working with animation (Open XML SDK)](https://learn.microsoft.com/en-us/office/open-xml/presentation/working-with-animation)。
